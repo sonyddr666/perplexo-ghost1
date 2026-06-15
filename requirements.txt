@@ -1,0 +1,25 @@
+# Perplexo API - Dependências Python
+
+# Server Flask para MCP
+flask>=3.0.0
+
+# WSGI para produção
+gunicorn>=23.0.0
+
+# Variáveis de ambiente
+python-dotenv>=1.0.0
+
+# Rate limiting
+flask-limiter>=3.5.0
+
+# Validação de dados
+pydantic>=2.12.0
+
+# Requests para validação de tokens e fallback
+requests>=2.31.0
+
+# Dependências do scraper Perplexity (bundled em src/perplexity_webui_scraper/)
+curl-cffi~=0.15.0
+loguru>=0.7.3
+orjson>=3.11.0
+tenacity>=9.1.2

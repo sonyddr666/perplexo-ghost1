@@ -1,0 +1,36 @@
+# ==============================
+# Perplexo API - Docker Compose
+# ==============================
+# Versão sem VPN. Para roteamento via NordVPN, use docker-compose.vpn.yml
+
+services:
+  perplexo-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: perplexo-api
+    restart: unless-stopped
+    environment:
+      MCP_PORT: ${MCP_PORT:-3000}
+      FLASK_ENV: ${FLASK_ENV:-production}
+      PERPLEXITY_SESSION_TOKEN: ${PERPLEXITY_SESSION_TOKEN:-}
+      MCP_API_KEY: ${MCP_API_KEY:-}
+      MAX_ACTIVE_CONVERSATIONS: ${MAX_ACTIVE_CONVERSATIONS:-100}
+      CONVERSATION_TTL_SECONDS: ${CONVERSATION_TTL_SECONDS:-3600}
+      TOKEN_ROTATION_ENABLED: ${TOKEN_ROTATION_ENABLED:-true}
+      TOKENS_DIR: /app/data/tokens
+      CONVERSATIONS_DIR: /app/data/conversations
+    ports:
+      - "${MCP_PORT:-3000}:3000"
+    volumes:
+      - perplexo-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+
+volumes:
+  perplexo-data:
