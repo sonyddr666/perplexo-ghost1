@@ -10,8 +10,10 @@ services:
       dockerfile: Dockerfile
     container_name: perplexo-api
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      MCP_PORT: ${MCP_PORT:-3000}
+      MCP_PORT: ${MCP_PORT:-5000}
       FLASK_ENV: ${FLASK_ENV:-production}
       PERPLEXITY_SESSION_TOKEN: ${PERPLEXITY_SESSION_TOKEN:-}
       MCP_API_KEY: ${MCP_API_KEY:-}
@@ -21,16 +23,15 @@ services:
       TOKENS_DIR: /app/data/tokens
       CONVERSATIONS_DIR: /app/data/conversations
     ports:
-      - "${MCP_PORT:-3000}:3000"
+      - "${MCP_PORT:-5000}:${MCP_PORT:-5000}"
     volumes:
       - perplexo-data:/app/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${MCP_PORT:-5000}/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
-
 
 volumes:
   perplexo-data:
