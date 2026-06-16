@@ -1,32 +1,40 @@
 # perplexo-ghost1
 
-API REST em Flask para usar Perplexity por HTTP, com gerenciamento local de tokens, historico por usuario, streaming SSE, suporte a arquivos/imagens e scraper embutido no proprio projeto.
+API Flask + bot Telegram para usar o Perplexity com scraper local embutido, pool de tokens, cookies complementares, historico por usuario, streaming SSE, upload de arquivos, visao por imagem e painel de credenciais.
 
-## O Que Este Projeto Tem
+## O Que Tem No Projeto
 
 - API Flask em `src/perplexity_mcp.py`
-- Gerenciador de tokens em `src/token_manager.py`
-- Scraper Perplexity embutido em `src/perplexity_webui_scraper/`
+- Bot Telegram em `src/telegram_bot.py`
+- Gerenciador de tarefas do Telegram em `src/task_manager.py`
+- TTS opcional em `src/tts_service.py`
+- TokenManager em `src/token_manager.py`
+- Scraper embutido em `src/perplexity_webui_scraper/`
 - Pool de tokens com validacao, rotacao e refresh
+- Cadastro de token/cookies por API, pagina web e Telegram
 - Historico de conversas por `user_id`
-- Busca normal em JSON
-- Busca com streaming via SSE
-- Upload de arquivos no endpoint `/search`
-- Analise de imagem/base64 no endpoint `/vision`
-- Pagina local de credenciais em `/credentials`
-- Dockerfile e Docker Compose para deploy
-- Autenticacao opcional por `X-API-Key`
+- Busca JSON em `/search`
+- Streaming SSE em `/search_stream`
+- Upload de arquivos no `/search`
+- Imagem base64 no `/vision`
+- Pagina web de credenciais em `/credentials`
+- Dockerfile e Docker Compose
+- Porta padrao da API: `5000`
 
 ## Requisitos
 
-- Python 3.12 ou superior
-- Token de sessao do Perplexity
-- Docker opcional para deploy em container
+- Python 3.12+
+- Token de bot do Telegram, se for usar Telegram
+- Token/cookies de sessao do Perplexity
+- Docker opcional
 
-Dependencias Python principais:
+Dependencias principais:
 
 - Flask
 - Gunicorn
+- python-telegram-bot
+- httpx
+- APScheduler
 - Flask-Limiter
 - Pydantic
 - Requests
@@ -39,23 +47,27 @@ Dependencias Python principais:
 
 ```text
 perplexo-ghost1/
-├── src/
-│   ├── perplexity_mcp.py
-│   ├── token_manager.py
-│   ├── templates/
-│   └── perplexity_webui_scraper/
-├── scripts/
-├── config/
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-└── README.md
+|-- src/
+|   |-- perplexity_mcp.py
+|   |-- telegram_bot.py
+|   |-- task_manager.py
+|   |-- token_manager.py
+|   |-- tts_service.py
+|   |-- templates/
+|   `-- perplexity_webui_scraper/
+|-- scripts/
+|-- config/
+|-- Dockerfile
+|-- docker-compose.yml
+|-- docker-entrypoint.sh
+|-- requirements.txt
+|-- .env.example
+`-- README.md
 ```
 
 ## Configuracao
 
-Crie um `.env` a partir do exemplo:
+Crie um `.env` baseado no exemplo:
 
 ```bash
 cp .env.example .env
@@ -64,20 +76,25 @@ cp .env.example .env
 Variaveis principais:
 
 ```env
-PERPLEXITY_SESSION_TOKEN=
-MCP_API_KEY=
-FLASK_ENV=production
 MCP_PORT=5000
-TOKENS_DIR=./data/tokens
-CONVERSATIONS_DIR=./data/conversations
+MCP_API_URL=http://127.0.0.1:5000
+MCP_API_KEY=
+
+PERPLEXITY_SESSION_TOKEN=
+TOKEN_ROTATION_ENABLED=true
 MAX_ACTIVE_CONVERSATIONS=100
 CONVERSATION_TTL_SECONDS=3600
-TOKEN_ROTATION_ENABLED=true
+
+TELEGRAM_TOKEN=
+TELEGRAM_PORT=8000
+WEBHOOK_URL=
+ALLOWED_TELEGRAM_USERS=
+VPN_ENABLED=false
 ```
 
-`PERPLEXITY_SESSION_TOKEN` pode ficar vazio se voce for cadastrar tokens pela pagina `/credentials` ou pelos endpoints `/tokens/*`.
+`PERPLEXITY_SESSION_TOKEN` pode ficar vazio se voce for cadastrar token/cookies pela pagina `/credentials`, pelos endpoints `/tokens/*` ou pelo Telegram.
 
-`MCP_API_KEY` e opcional. Quando definida, os endpoints protegidos exigem o header:
+`MCP_API_KEY` e opcional. Quando definida, os endpoints protegidos exigem:
 
 ```http
 X-API-Key: sua_chave
@@ -89,13 +106,7 @@ X-API-Key: sua_chave
 docker compose up -d --build
 ```
 
-Por padrao, o container expoe a API na porta definida em `MCP_PORT`.
-
-Healthcheck:
-
-```text
-GET /health
-```
+O container sobe a API Flask na porta `5000`. Se `TELEGRAM_TOKEN` estiver configurado, o mesmo container tambem inicia o bot Telegram. Se `TELEGRAM_TOKEN` estiver vazio, somente a API fica ativa.
 
 ## Rodar Sem Docker
 
@@ -104,7 +115,40 @@ pip install -r requirements.txt
 python src/perplexity_mcp.py
 ```
 
-A API sobe na porta configurada em `MCP_PORT`.
+Em outro terminal, para usar o Telegram:
+
+```bash
+python src/telegram_bot.py
+```
+
+## Telegram
+
+O bot usa a mesma API Flask por `MCP_API_URL`. Cada conversa do Telegram usa o usuario do Telegram como identidade do historico.
+
+Comandos principais:
+
+- `/start` abre o painel principal
+- `/modelos` troca o modelo
+- `/busca` escolhe focus de busca
+- `/tempo` escolhe filtro de tempo
+- `/config` abre configuracoes
+- `/new` cria nova conversa
+- `/limpar` limpa contexto
+- `/historico` lista historico
+- `/token` abre o painel de tokens
+- `/credencial`, `/credenciais` e `/credentials` abrem o mesmo painel de tokens
+- `/tokencolar` permite colar o `__Secure-next-auth.session-token`
+- `/colarcookies` permite colar o header `Cookie:`
+- `/cookies` permite enviar JSON exportado do navegador
+- `/apagartokens` limpa todos os tokens
+
+Para restringir quem usa o bot, configure:
+
+```env
+ALLOWED_TELEGRAM_USERS=123456789,987654321
+```
+
+Se `WEBHOOK_URL` ficar vazio, o bot usa polling. Se `WEBHOOK_URL` estiver configurado, ele abre webhook em `/telegram` na porta `TELEGRAM_PORT`.
 
 ## Endpoints Principais
 
@@ -121,7 +165,7 @@ A API sobe na porta configurada em `MCP_PORT`.
 | `GET` | `/history/list` | Lista historicos salvos |
 | `POST` | `/history/load` | Carrega historico salvo |
 | `POST` | `/history/delete` | Remove historico salvo |
-| `GET/POST` | `/config/library` | Consulta ou alterna salvar na biblioteca Perplexity |
+| `GET/POST` | `/config/library` | Consulta ou alterna salvar na biblioteca |
 | `POST` | `/config/token` | Define token principal em runtime |
 | `GET` | `/diagnostics` | Diagnostico de rede/autenticacao |
 
@@ -152,15 +196,7 @@ Abra:
 http://localhost:5000/credentials
 ```
 
-Ela permite:
-
-- salvar token de sessao
-- salvar cookie string
-- salvar JSON exportado do navegador
-- testar credenciais
-- limpar credenciais locais
-
-Se `MCP_API_KEY` estiver configurada, a pagina pede a chave para executar acoes administrativas.
+Ela permite salvar token de sessao, cookie string, JSON exportado do navegador, testar credenciais e limpar credenciais locais.
 
 ## Exemplo De Busca
 
@@ -178,45 +214,23 @@ curl -X POST http://localhost:5000/search \
   }'
 ```
 
-Resposta:
-
-```json
-{
-  "status": "success",
-  "answer": "...",
-  "thinking": null,
-  "model_used": "best",
-  "focus_mode": "web",
-  "time_range": "week",
-  "citations": [],
-  "has_thinking": false,
-  "conversation_info": {
-    "id": "usuario-1",
-    "uuid": null,
-    "model": "best",
-    "message_count": 1
-  }
-}
-```
-
 ## Modelos
 
-O endpoint `/models` retorna a lista de modelos disponiveis no scraper embutido.
-
-Aliases aceitos no `/search` incluem:
+O endpoint `/models` retorna a lista real do scraper embutido. O projeto tambem aceita aliases amigaveis, incluindo:
 
 - `best`
 - `sonar`
 - `deep-research`
 - `gpt-5.4`
 - `gpt-5.4-thinking`
+- `gpt-5.2`
 - `claude-sonnet-4.6`
-- `claude-sonnet-4.6-thinking`
-- `claude-opus-4.7`
-- `claude-opus-4.7-thinking`
+- `claude-opus-4.6`
+- `claude-4.6-opus`
 - `gemini-3.1-pro`
-- `kimi-k2.6-instant`
-- `kimi-k2.6-thinking`
+- `gemini-3-flash`
+- `grok-4.1`
+- `kimi-k2.5-thinking`
 - `nv-nemotron-3-super-thinking`
 
 Tambem podem ser usados IDs canonicos retornados por `/models`, como:
@@ -228,145 +242,9 @@ openai/gpt-5.4
 anthropic/claude-sonnet-4.6
 ```
 
-## Focus E Filtros
-
-`focus` aceitos:
-
-- `web`
-- `academic`
-- `social`
-- `finance`
-- `writing`
-
-`time_range` aceitos:
-
-- `all`
-- `day`
-- `week`
-- `month`
-- `year`
-
-`citation_mode` aceitos:
-
-- `default`
-- `markdown`
-- `clean`
-
-## Streaming SSE
+## Verificacao Rapida
 
 ```bash
-curl -N -X POST http://localhost:5000/search_stream \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: sua_chave" \
-  -d '{
-    "query": "Explique MCP de forma pratica",
-    "user_id": "stream-demo",
-    "model": "best",
-    "focus": "web"
-  }'
+python -m py_compile src/perplexity_mcp.py src/token_manager.py src/telegram_bot.py src/task_manager.py src/tts_service.py
+python -m compileall -q src/perplexity_webui_scraper
 ```
-
-Eventos emitidos:
-
-- `status`
-- `thinking`
-- `citation`
-- `chunk`
-- `file`
-- `clarifying_question`
-- `done`
-- `error`
-
-## Upload De Arquivos
-
-`/search` aceita `multipart/form-data`:
-
-```bash
-curl -X POST http://localhost:5000/search \
-  -H "X-API-Key: sua_chave" \
-  -F "query=Analise este arquivo" \
-  -F "user_id=arquivo-demo" \
-  -F "model=best" \
-  -F "focus=web" \
-  -F "file=@./arquivo.pdf"
-```
-
-## Vision
-
-```bash
-curl -X POST http://localhost:5000/vision \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: sua_chave" \
-  -d '{
-    "query": "Descreva a imagem",
-    "image_base64": "BASE64_AQUI",
-    "model": "best"
-  }'
-```
-
-## Historico
-
-A API mantem uma conversa ativa por `user_id`.
-
-Use:
-
-```text
-POST /clear
-GET  /history/list
-POST /history/load
-POST /history/delete
-```
-
-O diretorio de historico e definido por:
-
-```env
-CONVERSATIONS_DIR=./data/conversations
-```
-
-## Salvar Na Biblioteca Do Perplexity
-
-Por padrao, as conversas nao sao salvas na biblioteca remota da conta.
-
-Para consultar:
-
-```bash
-curl http://localhost:5000/config/library
-```
-
-Para alternar:
-
-```bash
-curl -X POST http://localhost:5000/config/library \
-  -H "X-API-Key: sua_chave"
-```
-
-## Diagnostico
-
-```bash
-curl http://localhost:5000/diagnostics
-```
-
-Retorna informacoes sobre:
-
-- status da API
-- IP publico detectado
-- disponibilidade do scraper
-- cliente Perplexity configurado
-
-## Problemas Comuns
-
-`503 Cliente nao inicializado`
-
-Configure um token em `PERPLEXITY_SESSION_TOKEN`, use `/credentials` ou envie token por `/tokens/set`.
-
-`401 Unauthorized`
-
-Confira o header `X-API-Key`.
-
-`403` ou erro de autenticacao no Perplexity
-
-Atualize o token/cookies e use os endpoints de refresh/validacao do pool.
-
-Streaming nao aparece
-
-Confirme que o cliente HTTP aceita `text/event-stream` e nao esta bufferizando a resposta.

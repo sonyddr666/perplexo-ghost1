@@ -64,7 +64,7 @@ limiter = Limiter(
 
 # Session token do Perplexity
 PERPLEXITY_SESSION_TOKEN = os.getenv("PERPLEXITY_SESSION_TOKEN", "")
-MCP_PORT = int(os.getenv("MCP_PORT", 3000))
+MCP_PORT = int(os.getenv("MCP_PORT", 5000))
 
 # API Key para autenticação do MCP Server
 MCP_API_KEY = os.getenv("MCP_API_KEY", "")
@@ -673,11 +673,14 @@ MODEL_ALIASES = {
     "claude-opus-4.7-thinking": "anthropic/claude-opus-4.7-thinking",
     "claude-opus-4.6": "anthropic/claude-opus-4.7",
     "claude-opus-4.6-thinking": "anthropic/claude-opus-4.7-thinking",
+    "claude-4.6-opus": "anthropic/claude-opus-4.7",
+    "claude-4.6-opus-thinking": "anthropic/claude-opus-4.7-thinking",
     "gemini-3.1-pro-thinking-low": "google/gemini-3.1-pro-thinking-low",
     "gemini-3.1-pro-thinking-high": "google/gemini-3.1-pro-thinking-high",
     "gemini-3.1-pro": "google/gemini-3.1-pro-thinking-low",
     "gemini-3-flash": "google/gemini-3.1-pro-thinking-low",
     "gemini-3-flash-thinking": "google/gemini-3.1-pro-thinking-high",
+    "gemini-3-pro-thinking": "google/gemini-3.1-pro-thinking-high",
     "kimi-k2.6-instant": "moonshot/kimi-k2.6-instant",
     "kimi-k2.6-thinking": "moonshot/kimi-k2.6-thinking",
     "kimi-k2.5-thinking": "moonshot/kimi-k2.6-thinking",
