@@ -152,33 +152,158 @@ def save_user_config(user_id: int, config: Dict[str, Any]) -> None:
 
 # ============= DADOS DOS MODELOS E FOCUS =============
 
-MODELS = [
-    ('claude-4.6-sonnet', '🎭 Claude 4.6', 'Novo!'),
-    ('claude-4.6-opus', '🎭 Opus 4.6', 'Novo!'),
-    ('gpt-5.2', '🧠 GPT-5.2', 'OpenAI'),
-    ('sonar', '⚡ Sonar', 'Rápido'),
-    ('deep-research', '📊 Deep Res.', 'Pesquisa'),
-    ('gemini-3-flash', '💎 Gemini 3', 'Google'),
-    ('grok-4.1', '🚀 Grok 4.1', 'xAI'),
-    ('kimi-k2.5-thinking', '🌙 Kimi 2.5', 'Moonshot')
+FALLBACK_MODELS = [
+    {"id": "perplexity/best", "name": "Best", "tier": "pro", "mode": "search"},
+    {"id": "perplexity/sonar-2", "name": "Sonar 2", "tier": "pro", "mode": "copilot"},
+    {"id": "perplexity/deep-research", "name": "Deep Research", "tier": "pro", "mode": "research"},
+    {"id": "openai/gpt-5.4", "name": "GPT-5.4", "tier": "pro", "mode": "copilot"},
+    {"id": "openai/gpt-5.4-thinking", "name": "GPT-5.4 Thinking", "tier": "pro", "mode": "copilot"},
+    {"id": "openai/gpt-5.5-thinking", "name": "GPT-5.5 Thinking", "tier": "max", "mode": "copilot"},
+    {"id": "google/gemini-3.1-pro-thinking-low", "name": "Gemini 3.1 Low", "tier": "pro", "mode": "copilot"},
+    {"id": "google/gemini-3.1-pro-thinking-high", "name": "Gemini 3.1 High", "tier": "pro", "mode": "copilot"},
+    {"id": "anthropic/claude-sonnet-4.6", "name": "Claude Sonnet 4.6", "tier": "pro", "mode": "copilot"},
+    {"id": "anthropic/claude-sonnet-4.6-thinking", "name": "Claude Sonnet Think", "tier": "pro", "mode": "copilot"},
+    {"id": "anthropic/claude-opus-4.7", "name": "Claude Opus 4.7", "tier": "max", "mode": "copilot"},
+    {"id": "anthropic/claude-opus-4.7-thinking", "name": "Claude Opus Think", "tier": "max", "mode": "copilot"},
+    {"id": "moonshot/kimi-k2.6-instant", "name": "Kimi K2.6 Instant", "tier": "pro", "mode": "copilot"},
+    {"id": "moonshot/kimi-k2.6-thinking", "name": "Kimi K2.6 Thinking", "tier": "pro", "mode": "copilot"},
+    {"id": "nvidia/nemotron-3-super-thinking", "name": "Nemotron 3 Super", "tier": "pro", "mode": "copilot"},
 ]
+
+MODEL_ALIASES = {
+    "best": "perplexity/best",
+    "sonar": "perplexity/sonar-2",
+    "sonar-2": "perplexity/sonar-2",
+    "deep-research": "perplexity/deep-research",
+    "gpt-5.2": "openai/gpt-5.4",
+    "gpt-5.2-thinking": "openai/gpt-5.4-thinking",
+    "gpt-5.4": "openai/gpt-5.4",
+    "gpt-5.4-thinking": "openai/gpt-5.4-thinking",
+    "gpt-5.5-thinking": "openai/gpt-5.5-thinking",
+    "claude-sonnet-4.6": "anthropic/claude-sonnet-4.6",
+    "claude-4.6-sonnet": "anthropic/claude-sonnet-4.6",
+    "claude-sonnet-4.6-thinking": "anthropic/claude-sonnet-4.6-thinking",
+    "claude-opus-4.6": "anthropic/claude-opus-4.7",
+    "claude-4.6-opus": "anthropic/claude-opus-4.7",
+    "claude-opus-4.7": "anthropic/claude-opus-4.7",
+    "claude-opus-4.7-thinking": "anthropic/claude-opus-4.7-thinking",
+    "gemini-3-flash": "google/gemini-3.1-pro-thinking-low",
+    "gemini-3-flash-thinking": "google/gemini-3.1-pro-thinking-high",
+    "gemini-3.1-pro": "google/gemini-3.1-pro-thinking-low",
+    "gemini-3.1-pro-thinking": "google/gemini-3.1-pro-thinking-high",
+    "grok-4.1": "perplexity/sonar-2",
+    "grok-4.1-thinking": "openai/gpt-5.5-thinking",
+    "kimi-k2.5-thinking": "moonshot/kimi-k2.6-thinking",
+    "kimi-k2.6-instant": "moonshot/kimi-k2.6-instant",
+    "kimi-k2.6-thinking": "moonshot/kimi-k2.6-thinking",
+    "nemotron": "nvidia/nemotron-3-super-thinking",
+}
+
+MODEL_EMOJIS = {
+    "perplexity": "🔎",
+    "openai": "🧠",
+    "google": "💎",
+    "anthropic": "🎭",
+    "moonshot": "🌙",
+    "nvidia": "🔬",
+}
+
+_models_cache = {"items": None, "at": 0.0}
+_model_selection_cache: Dict[int, Dict[str, str]] = {}
+
+
+def _canonical_model_id(model_id: str) -> str:
+    normalized = (model_id or "perplexity/best").strip().lower().replace("_", "-")
+    return MODEL_ALIASES.get(normalized, normalized)
+
+
+def _model_emoji(model_id: str) -> str:
+    provider = (model_id or "").split("/", 1)[0]
+    return MODEL_EMOJIS.get(provider, "🤖")
+
+
+def _short_model_name(model: dict) -> str:
+    model_id = model.get("id", "")
+    name = model.get("name") or model_id.rsplit("/", 1)[-1]
+    replacements = {
+        "Deep research": "Deep Research",
+        "Gemini 3.1 Pro Thinking Low": "Gemini 3.1 Low",
+        "Gemini 3.1 Pro Thinking High": "Gemini 3.1 High",
+        "Claude Sonnet 4.6 Thinking": "Claude Sonnet Think",
+        "Claude Opus 4.7 Thinking": "Claude Opus Think",
+        "Kimi K2.6 Thinking": "Kimi Thinking",
+        "Kimi K2.6 Instant": "Kimi Instant",
+        "Nemotron 3 Super Thinking": "Nemotron Think",
+    }
+    return replacements.get(name, name)
+
+
+def _model_button_label(model: dict, current_model: str) -> str:
+    model_id = model.get("id", "")
+    selected = _canonical_model_id(current_model) == model_id
+    tier = str(model.get("tier") or model.get("min_tier") or "pro").lower()
+    tier_label = " MAX" if tier == "max" else ""
+    return f"{'✅ ' if selected else ''}{_model_emoji(model_id)} {_short_model_name(model)}{tier_label}"
+
+
+def _model_detail_line(model: dict, current_model: str) -> str:
+    model_id = model.get("id", "")
+    marker = "✅" if _canonical_model_id(current_model) == model_id else "○"
+    tier = str(model.get("tier") or model.get("min_tier") or "pro").upper()
+    mode = model.get("mode") or "copilot"
+    return f"{marker} {_model_emoji(model_id)} *{_short_model_name(model)}* · `{tier}` · _{mode}_"
+
+
+async def get_available_models() -> list:
+    now = time.time()
+    cached = _models_cache.get("items")
+    if cached and now - float(_models_cache.get("at", 0)) < 300:
+        return cached
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=_mcp_headers()) as client:
+            response = await client.get(f"{MCP_API}/models")
+            response.raise_for_status()
+            data = response.json()
+            models = data.get("models") or []
+            normalized = []
+            for model in models:
+                model_id = model.get("id")
+                if not model_id:
+                    continue
+                normalized.append({
+                    "id": model_id,
+                    "name": model.get("name") or model_id.rsplit("/", 1)[-1],
+                    "tier": model.get("tier") or model.get("min_tier") or "pro",
+                    "mode": model.get("mode") or "copilot",
+                })
+            if normalized:
+                _models_cache["items"] = normalized
+                _models_cache["at"] = now
+                return normalized
+    except Exception as e:
+        logger.warning(f"Não foi possível carregar modelos da API, usando fallback: {e}")
+
+    _models_cache["items"] = FALLBACK_MODELS
+    _models_cache["at"] = now
+    return FALLBACK_MODELS
 
 def _resolve_model_id(base_model: str, thinking: bool) -> str:
     """
     Retorna o ID real do modelo baseado no toggle de Reasoning.
     Ex: claude-4.6-sonnet + thinking=True -> claude-4.6-sonnet-thinking
     """
+    base_model = _canonical_model_id(base_model)
     if not thinking:
         return base_model
         
     # Mapeamento de Thinking
     mapping = {
-        'claude-4.6-sonnet': 'claude-4.6-sonnet-thinking',
-        'claude-4.6-opus': 'claude-4.6-opus-thinking',
-        'gpt-5.2': 'gpt-5.2-thinking',
-        'gemini-3-flash': 'gemini-3-flash-thinking',
-        'gemini-3-pro': 'gemini-3-pro-thinking',
-        'grok-4.1': 'grok-4.1-thinking',
+        'openai/gpt-5.4': 'openai/gpt-5.4-thinking',
+        'anthropic/claude-sonnet-4.6': 'anthropic/claude-sonnet-4.6-thinking',
+        'anthropic/claude-opus-4.7': 'anthropic/claude-opus-4.7-thinking',
+        'google/gemini-3.1-pro-thinking-low': 'google/gemini-3.1-pro-thinking-high',
+        'moonshot/kimi-k2.6-instant': 'moonshot/kimi-k2.6-thinking',
     }
     
     return mapping.get(base_model, base_model)
@@ -242,7 +367,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         f"🌀 *Perplexo Bot {BOT_VERSION}* — Painel de Controle\n\n"
         f"*Status Atual:*\n"
-        f"🤖 Modelo: `{config['model']}`\n"
+        f"🤖 Modelo: `{_canonical_model_id(config['model'])}`\n"
         f"🔍 Focus: `{config['focus']}`\n"
         f"💬 Modo: `{config['mode']}`\n"
         f"☁️ Library: `{'ON' if config.get('save_to_library') else 'OFF'}`"
@@ -272,20 +397,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ============= COMANDO /modelos =============
 
 async def cmd_modelos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Lista de modelos com seletor visual (checkmark)"""
+    """Lista de modelos reais da API com seletor visual."""
     user_id = update.effective_user.id
     config = get_user_config(user_id)
-    current_model = config['model']
+    current_model = _canonical_model_id(config['model'])
+    models = await get_available_models()
+    _model_selection_cache[user_id] = {str(i): model["id"] for i, model in enumerate(models)}
     
     keyboard = []
     row = []
-    for model_id, emoji_name, description in MODELS:
-        prefix = "✅ " if model_id == current_model else ""
-        button_text = f"{prefix}{emoji_name}"
-        
+    for i, model in enumerate(models):
         row.append(InlineKeyboardButton(
-            button_text,
-            callback_data=f'set_model_{model_id}'
+            _model_button_label(model, current_model),
+            callback_data=f'modelsel_{i}'
         ))
         
         if len(row) == 2:
@@ -297,10 +421,12 @@ async def cmd_modelos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     keyboard.append([InlineKeyboardButton("« Voltar", callback_data='back_main')])
     
-    text = "🤖 *Escolher Modelo AI*\n\n"
-    for model_id, emoji_name, description in MODELS:
-        marker = "✅" if model_id == current_model else "○"
-        text += f"{marker} *{emoji_name}* - _{description}_\n"
+    text = (
+        "🤖 *Escolher Modelo AI*\n\n"
+        f"Atual: `{current_model}`\n\n"
+    )
+    for model in models:
+        text += _model_detail_line(model, current_model) + "\n"
     
     if update.callback_query:
         await update.callback_query.edit_message_text(
@@ -421,7 +547,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     
     text = (
         "⚙️ *Configurações*\n\n"
-        f"*Modelo Atual:* `{config['model']}`\n"
+        f"*Modelo Atual:* `{_canonical_model_id(config['model'])}`\n"
         f"*Focus Atual:* `{config['focus']}`\n"
         f"*Modo:* `{config['mode']}`\n\n"
         f"*Opções Avançadas:*\n"
@@ -863,7 +989,7 @@ async def cmd_importar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             payload = {
                 "query": user_query,
                 "user_id": str(user_id),
-                "model": config['model'],
+                "model": _canonical_model_id(config['model']),
                 "focus": "writing", # Focus writing é bom para processar texto
                 "return_citations": False
             }
@@ -1659,14 +1785,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await cmd_voz(update, context)
     
     # Seleção de modelo
-    elif data.startswith('set_model_'):
-        model = data.replace('set_model_', '')
+    elif data.startswith('modelsel_') or data.startswith('set_model_'):
+        if data.startswith('modelsel_'):
+            model_key = data.replace('modelsel_', '')
+            model = _model_selection_cache.get(user_id, {}).get(model_key)
+            if not model:
+                models = await get_available_models()
+                try:
+                    model = models[int(model_key)]["id"]
+                except Exception:
+                    model = "perplexity/best"
+        else:
+            model = data.replace('set_model_', '')
+        model = _canonical_model_id(model)
         config = get_user_config(user_id)
         config['model'] = model
         config['mode'] = 'busca'
         save_user_config(user_id, config)
         
-        await query.answer(f"✅ Modelo {model.upper()} selecionado!")
+        await query.answer(f"✅ Modelo selecionado: {model}")
         await cmd_modelos(update, context)
     
     elif data.startswith('load_history_'):
@@ -2819,7 +2956,7 @@ async def process_files_batch(update: Update, context: ContextTypes.DEFAULT_TYPE
             data_payload = {
                 "query": query,
                 "user_id": str(user_id),
-                "model": config['model'],
+                "model": _resolve_model_id(config['model'], config.get('reasoning', False)),
                 "focus": "web",
                 "return_citations": "false"
             }
@@ -2885,7 +3022,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         async with httpx.AsyncClient(timeout=180.0, headers=_mcp_headers()) as client:
             payload = {
                 "query": caption,
-                "model": config['model'],
+                "model": _resolve_model_id(config['model'], config.get('reasoning', False)),
                 "image_base64": photo_b64,
                 "focus": "web"
             }
@@ -3063,7 +3200,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             data = {
                 "query": ".",
                 "user_id": str(user_id),
-                "model": config['model'],
+                "model": _resolve_model_id(config['model'], config.get('reasoning', False)),
                 "focus": config['focus']
             }
             
