@@ -54,6 +54,11 @@ TOKEN_STATUS_CF_BLOCKED = "cf_blocked"
 TOKEN_STATUS_UNKNOWN = "unknown"
 
 
+def _public_credential_label(index: int) -> str:
+    """Label seguro para respostas públicas, sem email/nome da conta."""
+    return f"credencial_{index + 1}"
+
+
 # ============= DETECÇÃO DE FORMATO =============
 
 def detect_input_type(raw: str) -> str:
@@ -233,7 +238,7 @@ class TokenManager:
         self.accounts = []
         for entry in pool["pool"]:
             self.accounts.append({
-                "name": entry.get("name", "?"),
+                "name": _public_credential_label(pool["pool"].index(entry)) if entry else "credencial",
                 "email": entry.get("email"),
                 "session_token": entry.get("session_token", ""),
                 "source": entry.get("source", "pool"),
@@ -368,7 +373,7 @@ class TokenManager:
         s = self.get_pool_status()
         logger.info(
             f"🔑 Pool: {s['total']} token(s) — "
-            f"✅{s['valid']} 🟠{s['cf_blocked']} ❌{s['invalid']} ❓{s['unknown']}"
+            f"✅{s['valid']} 🟠{s['cf_blocked']} {s['invalid']} {s['unknown']}"
         )
 
     # ============= ENTRADA UNIFICADA =============
@@ -391,7 +396,7 @@ class TokenManager:
                     "name": name or "desconhecido",
                     "status": "error",
                     "input_type": "unknown",
-                    "message": "❌ Formato não reconhecido. Cole JWT (eyJ...), JSON array de cookies, ou cookie string.",
+                    "message": " Formato não reconhecido. Cole JWT (eyJ...), JSON array de cookies, ou cookie string.",
                     "duplicate": False
                 }
 
@@ -404,7 +409,7 @@ class TokenManager:
                     "name": name or "desconhecido",
                     "status": "error",
                     "input_type": input_type,
-                    "message": "❌ JWT (__Secure-next-auth.session-token) não encontrado no input.",
+                    "message": " JWT (__Secure-next-auth.session-token) não encontrado no input.",
                     "duplicate": False
                 }
 
@@ -415,7 +420,7 @@ class TokenManager:
                 pool["cookies_updated_at"] = datetime.now().isoformat()
                 pool["cookies_status"] = "ok"
                 self._save_pool(pool)
-                logger.info(f"🍪 Cookies complementares atualizados: {list(complementary.keys())}")
+                logger.info(f" Cookies complementares atualizados: {list(complementary.keys())}")
 
             # Adiciona JWT ao pool
             result = self._add_jwt_to_pool(jwt_token, name=name, source=source, validate=validate)
@@ -437,13 +442,13 @@ class TokenManager:
                     entry["last_validated"] = datetime.now().isoformat()
                     entry["invalidation_reason"] = None if status == "valid" else reason
                     self._save_pool(pool)
-                logger.info(f"⚠️ Token duplicado: {entry['id']}")
+                logger.info(f"⚠ Token duplicado: {entry['id']}")
                 return {
                     "success": True,
                     "token_id": entry["id"],
-                    "name": entry.get("name", "?"),
+                    "name": _public_credential_label(pool["pool"].index(entry)),
                     "status": entry.get("status", "unknown"),
-                    "message": f"ℹ️ Token já existe: '{entry.get('name')}' ({entry.get('status')})",
+                    "message": f"ℹ Token já existe: '{entry.get('name')}' ({entry.get('status')})",
                     "duplicate": True
                 }
 
@@ -485,7 +490,7 @@ class TokenManager:
         return {
             "success": True,
             "token_id": token_id,
-            "name": entry["name"],
+            "name": _public_credential_label(len(pool["pool"]) - 1),
             "status": status,
             "message": f"✅ Token '{entry['name']}' adicionado (status: {status})",
             "duplicate": False
@@ -548,8 +553,7 @@ class TokenManager:
                 data = resp.json()
                 if data.get("user"):
                     self._capture_response_cookies(resp)
-                    email = data["user"].get("email", "autenticado")
-                    return "valid", f"OK — {email}"
+                    return "valid", "OK"
                 return "invalid", "Sessão sem user — JWT expirado"
             except Exception:
                 return "error", "Falha ao parsear resposta JSON"
@@ -577,7 +581,7 @@ class TokenManager:
                 if val and pool["cookies"].get(name) != val:
                     pool["cookies"][name] = val
                     updated = True
-                    logger.debug(f"🍪 Cookie atualizado: {name}")
+                    logger.debug(f" Cookie atualizado: {name}")
             if updated:
                 pool["cookies_updated_at"] = datetime.now().isoformat()
                 pool["cookies_status"] = "ok"
@@ -632,7 +636,7 @@ class TokenManager:
                 return {
                     "success": False,
                     "new_token": None,
-                    "message": "❌ Sem cookies complementares. Cole JSON array de cookies primeiro."
+                    "message": " Sem cookies complementares. Cole JSON array de cookies primeiro."
                 }
 
             # Determina token alvo
@@ -655,7 +659,7 @@ class TokenManager:
                     target_token = target_entry["session_token"]
 
             if not target_token:
-                return {"success": False, "new_token": None, "message": "❌ Nenhum token para refresh"}
+                return {"success": False, "new_token": None, "message": " Nenhum token para refresh"}
 
             all_cookies = {**complementary, "__Secure-next-auth.session-token": target_token}
 
@@ -681,26 +685,26 @@ class TokenManager:
                     impersonate="chrome", timeout=15
                 )
             except ImportError:
-                return {"success": False, "new_token": None, "message": "❌ curl_cffi não instalado"}
+                return {"success": False, "new_token": None, "message": " curl_cffi não instalado"}
             except Exception as e:
-                return {"success": False, "new_token": None, "message": f"❌ Erro: {e}"}
+                return {"success": False, "new_token": None, "message": f" Erro: {e}"}
 
             if resp.status_code == 403:
                 pool["cookies_status"] = "expired"
                 self._save_pool(pool)
                 return {"success": False, "new_token": None,
-                        "message": "❌ Cloudflare bloqueou (403). Cookies complementares expirados."}
+                        "message": " Cloudflare bloqueou (403). Cookies complementares expirados."}
 
             if resp.status_code == 401:
                 if target_entry:
                     target_entry["status"] = TOKEN_STATUS_INVALID
                     target_entry["invalidation_reason"] = "401 no refresh"
                     self._save_pool(pool)
-                return {"success": False, "new_token": None, "message": "❌ Token expirado (401)"}
+                return {"success": False, "new_token": None, "message": " Token expirado (401)"}
 
             if resp.status_code != 200:
                 return {"success": False, "new_token": None,
-                        "message": f"❌ Status inesperado: {resp.status_code}"}
+                        "message": f" Status inesperado: {resp.status_code}"}
 
             # Captura cookies da resposta
             self._capture_response_cookies(resp)
@@ -729,7 +733,7 @@ class TokenManager:
                 self._save_pool(pool)
 
             return {"success": True, "new_token": None,
-                    "message": "ℹ️ Token ainda válido (servidor não devolveu novo JWT)"}
+                    "message": "ℹ Token ainda válido (servidor não devolveu novo JWT)"}
 
     def refresh_from_browser_cookies(self) -> dict:
         """Alias de compatibilidade → refresh_token()"""
@@ -755,14 +759,14 @@ class TokenManager:
                 continue
 
             result = self.refresh_token(token_id=entry["id"])
-            safe_name = entry.get("name", entry["id"])
+            safe_name = _public_credential_label(pool["pool"].index(entry))
 
             if result.get("new_token"):
                 results["new_tokens"] += 1
                 results["details"]["new_tokens"].append({
                     "source": safe_name,
                     "new_id": entry["id"],
-                    "preview": f"****{result['new_token'][-8:]}"
+                    "preview": "redacted"
                 })
             elif result.get("success"):
                 results["still_valid"] += 1
@@ -787,7 +791,7 @@ class TokenManager:
                     entry["status"] = reason
                     entry["invalidation_reason"] = reason
                     entry["last_validated"] = datetime.now().isoformat()
-                    emoji = "🚫" if reason == "cf_blocked" else "❌"
+                    emoji = "🚫" if reason == "cf_blocked" else ""
                     logger.warning(f"{emoji} Token {entry['id']} ({entry.get('name')}) → {reason}")
                     break
             self._save_pool(pool)
@@ -847,7 +851,7 @@ class TokenManager:
         """Avança para o próximo token válido. Retorna info."""
         token, token_id = self.get_next_valid_token()
         if not token:
-            return {"success": False, "message": "❌ Nenhum token válido disponível",
+            return {"success": False, "message": " Nenhum token válido disponível",
                     "token": None, "account": {}}
         pool = self._load_pool()
         entry = next((e for e in pool["pool"] if e["id"] == token_id), {})
@@ -855,9 +859,9 @@ class TokenManager:
             "success": True,
             "token_id": token_id,
             "token": token,
-            "name": entry.get("name", "?"),
-            "message": f"✅ Rotacionado para: {entry.get('name', '?')}",
-            "account": entry
+            "name": _public_credential_label(pool["pool"].index(entry)) if entry else "credencial",
+            "message": "Credencial rotacionada",
+            "account": self._public_token_entry(entry, pool["pool"].index(entry)) if entry else {}
         }
 
     # ============= POOL MANAGEMENT =============
@@ -889,7 +893,7 @@ class TokenManager:
             self._save_pool(pool)
             removed = before - len(pool["pool"])
             if removed:
-                logger.info(f"🗑️ {removed} token(s) inválido(s) removidos")
+                logger.info(f"🗑 {removed} token(s) inválido(s) removidos")
             return removed
 
     def get_pool_status(self) -> dict:
@@ -908,6 +912,8 @@ class TokenManager:
         elif entries:
             current_entry = entries[0]
 
+        current_idx = entries.index(current_entry) if current_entry in entries else -1
+
         return {
             "total": len(entries),
             "valid": count(TOKEN_STATUS_VALID),
@@ -917,28 +923,29 @@ class TokenManager:
             "active": bool(valid_entries),
             "current_account": {
                 "id": current_entry["id"] if current_entry else None,
-                "name": current_entry.get("name", "N/A") if current_entry else "N/A",
-                "email": current_entry.get("email") if current_entry else None,
+                "name": _public_credential_label(current_idx) if current_entry else "N/A",
+                "email": None,
                 "last_validated": current_entry.get("last_validated") if current_entry else None,
             } if current_entry else {"id": None, "name": "N/A", "email": None, "last_validated": None},
             "has_complementary_cookies": bool(pool.get("cookies")),
             "complementary_cookies_keys": list(pool.get("cookies", {}).keys()),
             "cookies_status": pool.get("cookies_status", "unknown"),
             "cookies_updated_at": pool.get("cookies_updated_at"),
-            "tokens": [
-                {
-                    "id": e["id"],
-                    "name": e.get("name", "?"),
-                    "email": e.get("email"),
-                    "status": e.get("status", TOKEN_STATUS_UNKNOWN),
-                    "preview": f"****{e['session_token'][-8:]}" if e.get("session_token") else "????",
-                    "source": e.get("source", "?"),
-                    "last_validated": e.get("last_validated"),
-                    "last_used": e.get("last_used"),
-                    "invalidation_reason": e.get("invalidation_reason"),
-                }
-                for e in entries
-            ]
+            "tokens": [self._public_token_entry(e, idx) for idx, e in enumerate(entries)]
+        }
+
+    def _public_token_entry(self, entry: dict, index: int) -> dict:
+        """Representacao segura de uma credencial para APIs externas."""
+        return {
+            "id": entry.get("id"),
+            "name": _public_credential_label(index),
+            "email": None,
+            "status": entry.get("status", TOKEN_STATUS_UNKNOWN),
+            "preview": "redacted",
+            "source": entry.get("source", "?"),
+            "last_validated": entry.get("last_validated"),
+            "last_used": entry.get("last_used"),
+            "invalidation_reason": entry.get("invalidation_reason"),
         }
 
     def get_complementary_cookies(self) -> dict:
@@ -1079,7 +1086,7 @@ class TokenManager:
         self.accounts = []
         self.current_index = 0
         self._env_token = ""
-        logger.warning("⚠️ TODOS os tokens foram apagados!")
+        logger.warning("⚠ TODOS os tokens foram apagados!")
         return result
 
 
@@ -1111,11 +1118,11 @@ def _start_auto_refresh_worker(token_manager_factory):
 
     t = threading.Thread(target=_loop, daemon=True, name="token-auto-refresh")
     t.start()
-    logger.info("🕐 Auto-refresh worker iniciado (6h)")
+    logger.info(" Auto-refresh worker iniciado (6h)")
     return t
 
 
-# ============= FUNÇÕES UTILITÁRIAS =============
+# ============= FUNÇÕES UTILITRIAS =============
 
 def create_cookies_file_template(output_path: Path = None) -> Path:
     """Cria template vazio (compat legado)."""
@@ -1177,4 +1184,4 @@ if __name__ == "__main__":
             print("Uso: python token_manager.py status|validate|set <input>|refresh|refresh-all")
     else:
         s = tm.get_pool_status()
-        print(f"\n🔑 Pool: {s['total']} token(s) — ✅{s['valid']} 🟠{s['cf_blocked']} ❌{s['invalid']} ❓{s['unknown']}")
+        print(f"\n🔑 Pool: {s['total']} token(s) — ✅{s['valid']} 🟠{s['cf_blocked']} {s['invalid']} {s['unknown']}")

@@ -26,20 +26,24 @@ import uuid
 import time
 import threading
 import functools
+import hmac
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse, urlunparse
 
 # Garante que o pacote local (src/perplexity_webui_scraper) tem prioridade
 _src_dir = str(Path(__file__).resolve().parent)
 if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Carrega .env
 load_dotenv()
@@ -55,6 +59,10 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true").lower() in ("true", "1", "yes")
+if TRUST_PROXY_HEADERS:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+
 # Rate limiting
 limiter = Limiter(
     app=app,
@@ -68,6 +76,99 @@ MCP_PORT = int(os.getenv("MCP_PORT", 5000))
 
 # API Key para autenticação do MCP Server
 MCP_API_KEY = os.getenv("MCP_API_KEY", "")
+ALLOWED_ORIGINS = {
+    origin.strip().rstrip("/")
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+}
+AUTH_FAILURE_WINDOW_SECONDS = int(os.getenv("AUTH_FAILURE_WINDOW_SECONDS", "900"))
+AUTH_FAILURE_LIMIT = int(os.getenv("AUTH_FAILURE_LIMIT", "10"))
+FORCE_HTTPS = os.getenv("FORCE_HTTPS", "false").lower() in ("true", "1", "yes")
+HTTPS_EXEMPT_HOSTS = {
+    host.strip().lower()
+    for host in os.getenv("HTTPS_EXEMPT_HOSTS", "127.0.0.1,localhost,0.0.0.0").split(",")
+    if host.strip()
+}
+HTTPS_EXEMPT_PATHS = {
+    path.strip()
+    for path in os.getenv("HTTPS_EXEMPT_PATHS", "").split(",")
+    if path.strip()
+}
+_auth_failures: Dict[str, List[float]] = {}
+
+
+def _same_origin(origin: str) -> bool:
+    try:
+        parsed_origin = urlparse(origin)
+        parsed_host = urlparse(request.host_url)
+        return parsed_origin.scheme in {"http", "https"} and parsed_origin.netloc == parsed_host.netloc
+    except Exception:
+        return False
+
+
+def _origin_allowed() -> bool:
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    clean_origin = origin.rstrip("/")
+    return clean_origin in ALLOWED_ORIGINS or _same_origin(clean_origin)
+
+
+def _auth_too_many_failures(client_id: str) -> bool:
+    now = time.time()
+    recent = [ts for ts in _auth_failures.get(client_id, []) if now - ts < AUTH_FAILURE_WINDOW_SECONDS]
+    _auth_failures[client_id] = recent
+    return len(recent) >= AUTH_FAILURE_LIMIT
+
+
+def _record_auth_failure(client_id: str) -> None:
+    now = time.time()
+    recent = [ts for ts in _auth_failures.get(client_id, []) if now - ts < AUTH_FAILURE_WINDOW_SECONDS]
+    recent.append(now)
+    _auth_failures[client_id] = recent
+
+
+def _request_host_without_port() -> str:
+    return (request.host or "").split(":", 1)[0].lower()
+
+
+def _is_https_exempt() -> bool:
+    host = _request_host_without_port()
+    return host in HTTPS_EXEMPT_HOSTS or request.path in HTTPS_EXEMPT_PATHS
+
+
+@app.before_request
+def force_https_redirect():
+    if not FORCE_HTTPS or request.is_secure or _is_https_exempt():
+        return None
+
+    parsed = urlparse(request.url)
+    https_url = urlunparse(parsed._replace(scheme="https"))
+    return Response(status=308, headers={"Location": https_url})
+
+
+@app.before_request
+def reject_untrusted_origin():
+    if request.method == "OPTIONS":
+        return Response(status=204)
+    if not _origin_allowed():
+        return jsonify({"error": "Forbidden", "message": "Origin nao autorizado"}), 403
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+    )
+    if os.getenv("DISABLE_HSTS", "false").lower() not in ("true", "1", "yes"):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 # Limites de memória
 MAX_ACTIVE_CONVERSATIONS = int(os.getenv("MAX_ACTIVE_CONVERSATIONS", 100))
@@ -102,22 +203,21 @@ class TokenUpdateRequest(BaseModel):
 # ============= API KEY MIDDLEWARE =============
 
 def require_api_key(f):
-    """Decorator para exigir API key nos endpoints protegidos"""
+    """Exige API key somente via header X-API-Key."""
     @functools.wraps(f)
     def decorated(*args, **kwargs):
         if not MCP_API_KEY:
-            # Se não tem API key configurada, aceita qualquer request (dev mode)
             return f(*args, **kwargs)
-        
-        # Verifica header X-API-Key
-        provided_key = request.headers.get('X-API-Key', '')
-        if not provided_key:
-            # Fallback: query param
-            provided_key = request.args.get('api_key', '')
-        
-        if provided_key != MCP_API_KEY:
-            return jsonify({"error": "Unauthorized", "message": "API key inválida ou ausente"}), 401
-        
+
+        client_id = get_remote_address()
+        if _auth_too_many_failures(client_id):
+            return jsonify({"error": "Too Many Requests", "message": "Muitas tentativas invalidas"}), 429
+
+        provided_key = request.headers.get("X-API-Key", "")
+        if not provided_key or not hmac.compare_digest(provided_key, MCP_API_KEY):
+            _record_auth_failure(client_id)
+            return jsonify({"error": "Unauthorized", "message": "API key invalida ou ausente"}), 401
+
         return f(*args, **kwargs)
     return decorated
 
@@ -130,7 +230,7 @@ try:
     # Inicia worker de auto-refresh (6h)
     _start_auto_refresh_worker(get_token_manager)
 except Exception as e:
-    logger.warning(f"⚠️ TokenManager não disponível: {e}")
+    logger.warning(f"⚠ TokenManager não disponível: {e}")
     token_manager = None
 
 # ============= IMPORTAÇÃO DO SCRAPER REAL =============
@@ -162,14 +262,14 @@ try:
         from perplexity_webui_scraper import SourceFocus as _SourceFocus
         SourceFocus = _SourceFocus
     except ImportError:
-        logger.warning("⚠️ SourceFocus não disponível")
+        logger.warning("⚠ SourceFocus não disponível")
         SourceFocus = None
 
     try:
         from perplexity_webui_scraper import TimeRange as _TimeRange
         TimeRange = _TimeRange
     except ImportError:
-        logger.warning("⚠️ TimeRange não disponível")
+        logger.warning("⚠ TimeRange não disponível")
         TimeRange = None
     
     SCRAPER_AVAILABLE = True
@@ -181,7 +281,7 @@ try:
         logger.info(f"📋 Modelos disponíveis: {available_models[:5]}...")
         
 except ImportError as e:
-    logger.warning(f"⚠️ Scraper não instalado: {e}")
+    logger.warning(f"⚠ Scraper não instalado: {e}")
     logger.warning("Instale com: pip install git+https://github.com/henrique-coder/perplexity-webui-scraper")
 
 # ============= CLIENTE PERPLEXITY =============
@@ -229,7 +329,7 @@ class ClientManager:
                 else:
                     logger.info("✅ Cliente Default inicializado!")
             except Exception as e:
-                logger.error(f"❌ Erro config default client: {e}")
+                logger.error(f" Erro config default client: {e}")
 
     def get_client(self, lat: float = None, lon: float = None) -> Optional[Perplexity]:
         # Se não tem coords, usa default
@@ -312,7 +412,7 @@ def _recover_auth_failure(user_id: str, err_str: str, attempt: int, max_retries:
         else:
             refresh_result = token_manager.refresh_token()
     except Exception as refresh_err:
-        logger.warning(f"⚠️ Refresh automático falhou em {route_name}: {refresh_err}")
+        logger.warning(f"⚠ Refresh automático falhou em {route_name}: {refresh_err}")
 
     if refresh_result and refresh_result.get("success"):
         refreshed_token = refresh_result.get("new_token") or current_token or token_manager.get_current_token()
@@ -353,13 +453,30 @@ def _credentials_ui_auth_error():
         return None
 
     provided_key = request.headers.get("X-API-Key", "")
-    if provided_key != MCP_API_KEY:
+    if not provided_key or not hmac.compare_digest(provided_key, MCP_API_KEY):
         return jsonify({
             "success": False,
             "message": "Informe a chave administrativa para usar esta página."
         }), 401
 
     return None
+
+
+def _credentials_page_auth_error():
+    """Protege o HTML /credentials com HTTP Basic usando a MCP_API_KEY."""
+    if not MCP_API_KEY:
+        return None
+
+    auth = request.authorization
+    password = auth.password if auth else ""
+    if password and hmac.compare_digest(password, MCP_API_KEY):
+        return None
+
+    return Response(
+        "Unauthorized",
+        401,
+        {"WWW-Authenticate": 'Basic realm="perplexo-ghost1 credentials"'}
+    )
 
 
 def cleanup_expired_conversations():
@@ -424,7 +541,27 @@ logger.info(f"🧹 Cleanup thread iniciada (TTL={CONVERSATION_TTL_SECONDS}s, Max
 # Diretório para salvar conversas
 CONVERSATIONS_DIR = Path(os.getenv("CONVERSATIONS_DIR", "./data/conversations"))
 CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
-logger.info(f"📁 Diretório de conversas: {CONVERSATIONS_DIR.absolute()}")
+logger.info(f" Diretório de conversas: {CONVERSATIONS_DIR.absolute()}")
+
+
+def _safe_user_id(user_id: str) -> str:
+    """Converte user_id externo em nome de pasta seguro."""
+    raw = str(user_id or "default")[:120]
+    safe = re.sub(r"[^A-Za-z0-9_.:-]", "_", raw).strip("._")
+    return safe or "default"
+
+
+def _safe_conversation_id(conv_id: str) -> Optional[str]:
+    raw = str(conv_id or "")
+    return raw if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", raw) else None
+
+
+def _conversation_user_dir(user_id: str) -> Path:
+    root = CONVERSATIONS_DIR.resolve()
+    user_dir = (root / _safe_user_id(user_id)).resolve()
+    if not str(user_dir).startswith(str(root)):
+        raise ValueError("user_id invalido")
+    return user_dir
 
 
 def save_conversation(user_id: str) -> Optional[str]:
@@ -460,7 +597,7 @@ def save_conversation(user_id: str) -> Optional[str]:
     }
     
     # Cria pasta do usuário
-    user_dir = CONVERSATIONS_DIR / user_id
+    user_dir = _conversation_user_dir(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     
     # Salva arquivo
@@ -501,7 +638,7 @@ def list_saved_conversations(user_id: str) -> List[Dict[str, Any]]:
     """
     Lista todas as conversas salvas de um usuário.
     """
-    user_dir = CONVERSATIONS_DIR / user_id
+    user_dir = _conversation_user_dir(user_id)
     if not user_dir.exists():
         return []
     
@@ -526,7 +663,10 @@ def load_conversation(user_id: str, conv_id: str) -> Optional[Dict[str, Any]]:
     """
     Carrega uma conversa salva pelo ID.
     """
-    file_path = CONVERSATIONS_DIR / user_id / f"{conv_id}.json"
+    safe_conv_id = _safe_conversation_id(conv_id)
+    if not safe_conv_id:
+        return None
+    file_path = _conversation_user_dir(user_id) / f"{safe_conv_id}.json"
     if not file_path.exists():
         return None
     
@@ -542,10 +682,13 @@ def delete_saved_conversation(user_id: str, conv_id: str) -> bool:
     """
     Deleta uma conversa salva.
     """
-    file_path = CONVERSATIONS_DIR / user_id / f"{conv_id}.json"
+    safe_conv_id = _safe_conversation_id(conv_id)
+    if not safe_conv_id:
+        return False
+    file_path = _conversation_user_dir(user_id) / f"{safe_conv_id}.json"
     if file_path.exists():
         file_path.unlink()
-        logger.info(f"[🗑️ DELETE] Conversa {conv_id} deletada")
+        logger.info(f"[🗑 DELETE] Conversa {conv_id} deletada")
         return True
     return False
 
@@ -805,6 +948,9 @@ def health_check():
 @app.route('/credentials', methods=['GET'])
 def credentials_page():
     """Página simples para cadastrar, testar e apagar credenciais sem exibir segredos."""
+    auth_error = _credentials_page_auth_error()
+    if auth_error:
+        return auth_error
     return render_template("credentials.html")
 
 
@@ -948,6 +1094,21 @@ def tokens_status():
     return jsonify(status)
 
 
+def _sanitize_token_response(result: dict) -> dict:
+    safe = dict(result or {})
+    safe.pop("token", None)
+    safe.pop("new_token", None)
+    safe.pop("old_token", None)
+    safe.pop("session_token", None)
+    safe.pop("email", None)
+    if safe.get("token_id"):
+        safe["token_preview"] = "redacted"
+        status = safe.get("status")
+        suffix = f" (status: {status})" if status else ""
+        safe["message"] = f"Credencial processada{suffix}"
+    return safe
+
+
 @app.route('/tokens/set', methods=['POST'])
 @require_api_key
 @limiter.limit("10 per minute")
@@ -977,7 +1138,8 @@ def tokens_set():
             client_manager.init_default(current)
         reset_runtime_conversations(save_existing=True)
     
-    result["token_preview"] = f"****{result.get('token_id', '????')[-4:]}" if result.get("token_id") else "????"
+    result = _sanitize_token_response(result)
+    result["token_preview"] = "redacted" if result.get("token_id") else None
     result["cookies_count"] = len(token_manager.get_complementary_cookies())
     result["rotated"] = not result.get("duplicate", False)
     result["refresh_message"] = result.get("message", "")
@@ -1003,7 +1165,7 @@ def tokens_validate():
         "account": pool_status["current_account"],
         "pool_status": pool_status,
         "message": "Token v\u00e1lido" if is_valid else "Token inv\u00e1lido ou bloqueado",
-        "token_preview": f"****{token_manager.get_current_token()[-8:]}" if token_manager.get_current_token() else None
+        "token_preview": "redacted" if token_manager.get_current_token() else None
     })
 
 
@@ -1018,6 +1180,7 @@ def tokens_rotate():
     if result.get("success") and result.get("token"):
         client_manager.init_default(result["token"])
     
+    result = _sanitize_token_response(result)
     result["new_index"] = 0
     result["account"] = result.get("account", {})
     return jsonify(result)
@@ -1096,7 +1259,7 @@ def tokens_upload_cookies_compat():
         current = token_manager.get_current_token()
         if current:
             client_manager.init_default(current)
-    return jsonify(result)
+    return jsonify(_sanitize_token_response(result))
 
 @app.route('/tokens/reload', methods=['POST'])
 @require_api_key
@@ -1511,11 +1674,11 @@ def list_models():
             {"id": "nvidia/nemotron-3-super-thinking", "name": "Nemotron 3 Super Thinking", "description": "NVIDIA Nemotron 3 Super Thinking", "tier": "pro", "mode": "copilot"}
         ],
         "focus_modes": [
-            {"id": "web", "name": "🌐 Web", "description": "Busca geral na web"},
+            {"id": "web", "name": " Web", "description": "Busca geral na web"},
             {"id": "academic", "name": "🎓 Academic", "description": "Papers científicos e acadêmicos"},
             {"id": "social", "name": "💬 Social", "description": "Reddit, Twitter e redes sociais"},
             {"id": "finance", "name": "📈 Finance", "description": "Dados financeiros e SEC EDGAR"},
-            {"id": "writing", "name": "✍️ Writing", "description": "Auxílio à escrita"}
+            {"id": "writing", "name": " Writing", "description": "Auxílio à escrita"}
         ],
         "citation_modes": [
             {"id": "default", "description": "texto[1] - Citações numeradas"},
@@ -2100,46 +2263,25 @@ def vision():
 
 
 @app.route('/diagnostics', methods=['GET'])
+@require_api_key
 def diagnostics():
-    """
-    Diagnóstico completo do sistema.
-    Checa:
-    1. IP Público (para validar VPN)
-    2. Autenticação Perplexity (tenta conectar)
-    """
+    """Diagnostico seguro: nao expoe IP publico nem identificadores sensiveis."""
     result = {
         "mcp_status": "online",
-        "public_ip": "unknown",
+        "public_ip": "redacted",
         "perplexity_auth": "unknown",
         "auth_error": None
     }
-    
-    # 1. Checa IP Público
-    try:
-        import urllib.request
-        try:
-            with urllib.request.urlopen('https://api.ipify.org', timeout=5) as response:
-                result['public_ip'] = response.read().decode('utf-8')
-        except:
-             # Fallback
-             with urllib.request.urlopen('https://ifconfig.me/ip', timeout=5) as response:
-                result['public_ip'] = response.read().decode('utf-8').strip()
-             
-    except Exception as e:
-        result['public_ip'] = f"Error: {str(e)}"
-        
-    # 2. Checa Autenticação Perplexity
+
     try:
         active_client = get_active_client()
         if SCRAPER_AVAILABLE and active_client is not None:
-             # Verifica apenas se o cliente existe (o check anterior de .session falhava)
-             result['perplexity_auth'] = "configured"
+            result["perplexity_auth"] = "configured"
         else:
-            result['perplexity_auth'] = "scraper_unavailable"
+            result["perplexity_auth"] = "scraper_unavailable"
+    except Exception:
+        result["perplexity_auth"] = "error"
 
-    except Exception as e:
-        result['error'] = str(e)
-        
     return jsonify(result)
 
 
@@ -2207,18 +2349,18 @@ if __name__ == '__main__':
     logger.info(f"🚀 MCP Server iniciando na porta {MCP_PORT}")
     logger.info(f"📦 Scraper disponível: {SCRAPER_AVAILABLE}")
     logger.info(f"🔑 Cliente inicializado: {get_active_client() is not None}")
-    logger.info(f"📍 SourceFocus disponível: {SourceFocus is not None}")
-    logger.info(f"🔐 API Key: {'Configurada' if MCP_API_KEY else 'DESATIVADA (dev mode)'}")
+    logger.info(f" SourceFocus disponível: {SourceFocus is not None}")
+    logger.info(f" API Key: {'Configurada' if MCP_API_KEY else 'DESATIVADA (dev mode)'}")
     logger.info(f"🧹 Cleanup: TTL={CONVERSATION_TTL_SECONDS}s, Max={MAX_ACTIVE_CONVERSATIONS}")
     
     if not SCRAPER_AVAILABLE:
-        logger.warning("⚠️ Instale o scraper: pip install git+https://github.com/henrique-coder/perplexity-webui-scraper")
+        logger.warning("⚠ Instale o scraper: pip install git+https://github.com/henrique-coder/perplexity-webui-scraper")
     
     if get_active_client() is None and SCRAPER_AVAILABLE:
-        logger.warning("⚠️ Configure o PERPLEXITY_SESSION_TOKEN no arquivo .env")
+        logger.warning("⚠ Configure o PERPLEXITY_SESSION_TOKEN no arquivo .env")
     
     if not MCP_API_KEY:
-        logger.warning("⚠️ MCP_API_KEY não configurada! Endpoints acessíveis sem autenticação.")
+        logger.warning("⚠ MCP_API_KEY não configurada! Endpoints acessíveis sem autenticação.")
     
     app.run(
         host='0.0.0.0',
