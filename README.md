@@ -198,20 +198,65 @@ http://localhost:5000/credentials
 
 Ela permite salvar token de sessao, cookie string, JSON exportado do navegador, testar credenciais e limpar credenciais locais.
 
-## Exemplo De Busca
+## Exemplos de Uso
+
+### Busca Mínima (modelo Best)
 
 ```bash
-curl -X POST http://localhost:5000/search \
+curl -s -X POST https://api.ghost1.cloud/search \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sua_chave" \
-  -d '{
-    "query": "Resuma as principais noticias de IA da semana",
-    "user_id": "usuario-1",
+  -d "{\"query\":\"qual o melhor dia da semana?\"}"
+```
+
+### Busca com Modelo Sonar
+
+```bash
+curl -s -X POST https://api.ghost1.cloud/search \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sua_chave" \
+  -d "{\"query\":\"qual o melhor dia da semana?\",\"model\":\"sonar\"}"
+```
+
+### Busca Completa (todos os parâmetros)
+
+```bash
+curl -s -X POST https://api.ghost1.cloud/search \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sua_chave" \
+  -d "{\"query\":\"notícias de IA da semana\",\"user_id\":\"usuario-1\",\"model\":\"best\",\"focus\":\"web\",\"time_range\":\"week\",\"citation_mode\":\"markdown\"}"
+```
+
+### Parâmetros do `/search`
+
+| Parâmetro | Padrão | Descrição | Opções |
+|---|---|---|---|
+| `query` | obrigatório | Sua pergunta ou busca | texto (1-10000 caracteres) |
+| `model` | `best` | Modelo de IA | `best`, `sonar`, `deep-research`, `gpt-5.4`, `claude-sonnet-4.6` |
+| `focus` | `web` | Foco da busca | `web`, `academic`, `social`, `finance`, `writing` |
+| `time_range` | `all` | Período | `all`, `day`, `week`, `month`, `year` |
+| `citation_mode` | `markdown` | Formato das citações | `default`, `markdown`, `clean` |
+| `user_id` | `default` | Identificador do usuário | texto (max 100 caracteres) |
+
+### Resposta
+
+```json
+{
+  "status": "success",
+  "answer": "Resposta com citações [1](url)...",
+  "citations": [
+    {"title": "...", "url": "...", "snippet": "..."}
+  ],
+  "conversation_info": {
+    "id": "user_id",
+    "message_count": 1,
     "model": "best",
-    "focus": "web",
-    "time_range": "week",
-    "citation_mode": "markdown"
-  }'
+    "uuid": "..."
+  },
+  "model_used": "best",
+  "focus_mode": "web",
+  "time_range": "all"
+}
 ```
 
 ## Modelos
